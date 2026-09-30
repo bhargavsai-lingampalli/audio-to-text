@@ -1,3 +1,4 @@
+import hashlib
 import html
 import json
 import os
@@ -20,9 +21,17 @@ from main import (
     load_model,
     make_srt,
     metric_insight,
+    parse_ignore_words,
     summary_row,
     transcribe_audio,
 )
+
+try:
+    from ai_analysis import analyze_transcript
+    AI_IMPORT_ERR = None
+except Exception as e:  # missing google-genai / python-dotenv, etc.
+    analyze_transcript = None
+    AI_IMPORT_ERR = str(e)
 
 st.set_page_config(page_title="Audio Transcriber", page_icon="🎙️", layout="wide")
 
@@ -138,6 +147,37 @@ def render_nerd_stats(idx, res, sec):
     )
 
 
+def render_ai_tab(idx, res, sec):
+    """Gemini feedback for one file. Result is cached so reruns don't re-bill the API."""
+    if not sec["plain"].strip():
+        st.info("No transcript text to analyze.")
+        return None
+
+    key = "ai_" + hashlib.md5(f"{res['name']}|{sec['plain']}".encode()).hexdigest()
+    cached = st.session_state.get(key)
+
+    st.caption(
+        "Sends the transcript **text** (not the audio) to Google Gemini. "
+        "It covers grammar and natural phrasing; fillers, pauses and speed "
+        "are handled in the other tabs."
+    )
+
+    label = "🔄 Re-run AI analysis" if cached else "🤖 Analyze with Gemini"
+    if st.button(label, key=f"aibtn_{idx}"):
+        with st.spinner("Asking Gemini…"):
+            try:
+                st.session_state[key] = analyze_transcript(sec["plain"])
+            except Exception as e:
+                st.error(f"AI analysis failed: {e}")
+        cached = st.session_state.get(key)
+
+    if cached:
+        st.markdown(cached)
+        copy_button(cached, "📋 Copy AI feedback")
+
+    return cached
+
+
 def render_result(idx, res, sec, options):
     info = res["info"]
 
@@ -153,6 +193,8 @@ def render_result(idx, res, sec, options):
         names.append("🔑 Keywords")
     if "filler" in sec:
         names.append("🗣️ Fillers & pauses")
+    if options["ai"]:
+        names.append("🤖 AI feedback")
 
     tabs = st.tabs(names)
 
@@ -199,7 +241,20 @@ def render_result(idx, res, sec, options):
 
     with tabs[2]:
         render_nerd_stats(idx, res, sec)
-        copy_button(sec["nerd_text"], "📋 Copy stats")
+
+        s1, s2, _ = st.columns([1.3, 1.3, 4])
+
+        with s1:
+            copy_button(sec["nerd_text"], "📋 Copy stats")
+
+        with s2:
+            st.download_button(
+                "⬇️ Stats .csv",
+                sec["stats_csv"],
+                f"{res['name'].split('.')[0]}_stats.csv",
+                mime="text/csv",
+                key=f"statscsv_{idx}",
+            )
 
     tab_index = 3
 
@@ -273,8 +328,17 @@ def render_result(idx, res, sec, options):
             )
             copy_button(sec["filler_text"], "📋 Copy fillers & pauses")
 
+    ai_text = None
+    if options["ai"]:
+        with tabs[-1]:
+            ai_text = render_ai_tab(idx, res, sec)
+
+    report = sec["report"]
+    if ai_text:
+        report += f"\n\n=== AI FEEDBACK ===\n{ai_text}"
+
     st.markdown("")
-    copy_button(sec["report"], "📋 Copy everything (this file)")
+    copy_button(report, "📋 Copy everything (this file)")
 
 
 # ---------------------------------------------------------------- Streamlit app
@@ -293,6 +357,12 @@ with st.sidebar:
     st.subheader("Display")
     top_n = st.slider("Top words to show", 5, 30, 7)
     drop_stop = st.checkbox("Ignore common words (the, and, is…)", value=False)
+    ignore_raw = st.text_area(
+        "Ignore custom words",
+        placeholder="e.g. okay, yeah, basically",
+        help="Separate with commas, spaces or new lines. Case-insensitive. "
+        "Removed from the top-words list and chart only; other stats still count them.",
+    )
     timestamps = st.checkbox("Show timestamps in transcript", value=False)
 
     st.divider()
@@ -306,6 +376,16 @@ with st.sidebar:
         help=None if YAKE_OK else "Install with: pip install yake",
     )
     use_fill = st.checkbox("🗣️ Filler words & pause detection", value=False)
+    use_ai = st.checkbox(
+        "🤖 AI analysis (Gemini)",
+        value=False,
+        disabled=analyze_transcript is None,
+        help=(
+            "Grammar and natural-English feedback. Sends transcript text to Google."
+            if analyze_transcript
+            else f"Unavailable: {AI_IMPORT_ERR}. Try: pip install google-genai python-dotenv"
+        ),
+    )
 
     kw_ngram, kw_top = 2, 10
     if use_kw:
@@ -343,6 +423,8 @@ options = {
     "fillers": use_fill,
     "filler_sel": filler_sel,
     "pause_thr": pause_thr,
+    "ignore_words": parse_ignore_words(ignore_raw),
+    "ai": use_ai,
 }
 
 # ---- inputs

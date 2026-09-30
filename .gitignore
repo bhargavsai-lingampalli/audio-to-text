@@ -4,4 +4,5 @@ models/
 *.bin
 .venv/
 __pycache__/
-
+.env
+.streamlit/

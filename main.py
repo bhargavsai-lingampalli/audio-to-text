@@ -1,6 +1,8 @@
 import re
 import time
 from collections import Counter
+
+import pandas as pd
 from faster_whisper import WhisperModel
 
 try:
@@ -71,6 +73,11 @@ def tokenize(text: str) -> list[str]:
     return re.findall(r"[a-z0-9']+", text.lower())
 
 
+def parse_ignore_words(raw: str) -> set[str]:
+    """Turn 'okay, yeah\nbasically' into {'okay', 'yeah', 'basically'}."""
+    return set(tokenize(raw or ""))
+
+
 def transcribe_audio(
     file_path,
     model,
@@ -110,15 +117,26 @@ def transcribe_audio(
     return segments, info, time.perf_counter() - started
 
 
-def analyze_audio(text: str, top_n: int, drop_stopwords: bool):
+def analyze_audio(text: str, top_n: int, drop_stopwords: bool, ignore_words=None):
     words = tokenize(text)
-    freq_words = [w for w in words if w not in STOPWORDS] if drop_stopwords else words
+    ignore = set(ignore_words or ())
+
+    freq_words = [w for w in words if w not in STOPWORDS] if drop_stopwords else list(words)
+    if ignore:
+        freq_words = [w for w in freq_words if w not in ignore]
     freq = Counter(freq_words)
+
+    notes = []
+    if drop_stopwords:
+        notes.append("stopwords removed")
+    if ignore:
+        notes.append("ignoring: " + ", ".join(sorted(ignore)))
+    note = f" ({'; '.join(notes)})" if notes else ""
 
     summary = (
         f"The transcribed text contains {len(words)} words, "
         f"with {len(set(words))} unique words.\n"
-        f"Top {top_n} words{' (stopwords removed)' if drop_stopwords else ''}:\n"
+        f"Top {top_n} words{note}:\n"
     )
     summary += "\n".join(f"  {w}: {c}" for w, c in freq.most_common(top_n))
 
@@ -320,6 +338,39 @@ def metric_insight(label, res, sec):
     return ""
 
 
+def build_stats_csv(nerd: dict, filler: dict | None = None, pause_thr: float | None = None) -> str:
+    """Stats as CSV text with Group, Metric, Value columns."""
+    rows = []
+    written = set()
+
+    for group, labels in METRIC_GROUPS.items():
+        for label in labels:
+            if label in nerd:
+                rows.append((group, label, nerd[label]))
+                written.add(label)
+
+    rows += [("Other", k, v) for k, v in nerd.items() if k not in written]
+
+    if filler:
+        g = "Fillers and pauses"
+        rows += [
+            (g, "Filler words", filler["total"]),
+            (g, "Fillers per minute", round(filler["per_min"], 2)),
+            (g, "Fillers as % of words", f"{filler['pct']:.1%}"),
+            *[(g, f"Filler: {k}", n) for k, n in filler["counts"].most_common()],
+        ]
+        if pause_thr is not None:
+            rows.append((g, "Pause threshold (s)", pause_thr))
+        rows += [
+            (g, "Pauses", len(filler["pauses"])),
+            (g, "Total pause time (s)", round(filler["pause_total"], 2)),
+            (g, "Silence in pauses", f"{filler['pause_pct']:.1%}"),
+            (g, "Longest pause (s)", round(filler["longest"], 2)),
+        ]
+
+    return pd.DataFrame(rows, columns=["Group", "Metric", "Value"]).to_csv(index=False)
+
+
 def compute_sections(res, options):
     segments, info = res["segments"], res["info"]
     duration = info.duration or 0.0
@@ -332,6 +383,7 @@ def compute_sections(res, options):
         plain,
         options["top_n"],
         options["drop_stop"],
+        options.get("ignore_words"),
     )
     sec["nerd"] = build_nerd_stats(res, plain)
     sec["nerd_text"] = stats_to_text(sec["nerd"])
@@ -373,6 +425,10 @@ def compute_sections(res, options):
 
         sec["filler_text"] = "\n".join(lines)
         sec["extra_text"] += f"\n\n=== FILLERS & PAUSES ===\n{sec['filler_text']}"
+
+    sec["stats_csv"] = build_stats_csv(
+        sec["nerd"], sec.get("filler"), options.get("pause_thr")
+    )
 
     sec["report"] = (
         f"=== TRANSCRIPTION ===\n{sec['transcript']}\n\n"
