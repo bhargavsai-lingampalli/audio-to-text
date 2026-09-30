@@ -1,0 +1,7 @@
+*.m4a*
+*.mp3*
+models/
+*.bin
+.venv/
+__pycache__/
+
