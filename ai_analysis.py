@@ -1,26 +1,24 @@
 import os
-from dotenv import load_dotenv
 from google import genai
 
-load_dotenv()
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
 _client = None
 
 
-def _get_client():
+def _get_client(key):
     """Create the client on first use so a missing key doesn't break app startup."""
     global _client
-    if _client is None:
-        api_key = st.secrets["GEMINI_API_KEY"]
+    if _client is None and key is not None:
+        api_key = key
         if not api_key:
             raise ValueError("GEMINI_API_KEY is not set in .env")
         _client = genai.Client(api_key=api_key)
     return _client
 
 
-def analyze_transcript(transcript):
+def analyze_transcript(transcript, apikey=None):
     if not transcript or not transcript.strip():
         raise ValueError("Transcript is empty")
 
@@ -71,7 +69,7 @@ Rules:
 - Do not force corrections when the speaker's English is already natural.
 """
 
-    response = _get_client().models.generate_content(
+    response = _get_client(apikey).models.generate_content(
         model=MODEL,
         contents=prompt
     )

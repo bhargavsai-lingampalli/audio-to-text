@@ -166,7 +166,7 @@ def render_ai_tab(idx, res, sec):
     if st.button(label, key=f"aibtn_{idx}"):
         with st.spinner("Asking Gemini…"):
             try:
-                st.session_state[key] = analyze_transcript(sec["plain"])
+                st.session_state[key] = analyze_transcript(sec["plain"], st.secrets.get("GEMINI_API_KEY"))
             except Exception as e:
                 st.error(f"AI analysis failed: {e}")
         cached = st.session_state.get(key)
@@ -383,7 +383,7 @@ with st.sidebar:
         help=(
             "Grammar and natural-English feedback. Sends transcript text to Google."
             if analyze_transcript
-            else f"Unavailable: {AI_IMPORT_ERR}. Try: pip install google-genai python-dotenv"
+            else f"Unavailable: {AI_IMPORT_ERR}. Try: pip install google-genai"
         ),
     )
 
